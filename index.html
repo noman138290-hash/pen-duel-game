@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="bn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>বেঞ্চ কলম যুদ্ধ — Online</title>
+<style>
+:root{color-scheme:dark;--bg:#142b26;--panel:#203e35;--line:#416b5a;--cream:#f0d09b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,"Noto Sans Bengali",sans-serif}
+.app{width:min(100%,600px);margin:auto;padding:14px 12px 26px}h1{text-align:center;font-size:25px;margin:3px 0}.sub{text-align:center;color:#c7ddd2;font-size:13px;margin:0 0 13px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:12px;margin-bottom:10px}
+input,button{font:inherit;border-radius:10px;border:1px solid #628273;padding:11px;background:#102820;color:white;min-width:0}
+input{width:100%;margin:4px 0 8px}button{cursor:pointer;font-weight:700;background:var(--cream);color:#17261f;border:0}button:disabled{opacity:.45}.row{display:flex;gap:8px}.row>*{flex:1}.small{font-size:12px;color:#c8d9d1;line-height:1.55}.hidden{display:none!important}
+.hud{display:flex;gap:7px;margin-bottom:9px}.pill{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;text-align:center;font-size:12px}.pill b{display:block;font-size:16px}
+.board-wrap{background:#1c3a31;padding:7px;border-radius:17px}canvas{display:block;width:100%;border-radius:11px;background:#d8b17b;touch-action:none}
+.status{min-height:43px;text-align:center;padding:10px 4px 3px;font-weight:650;color:#ffe0a8}.controls{display:flex;gap:8px}.controls button{flex:1}.muted{background:#d7e6de}.roomcode{font-weight:800;font-size:20px;letter-spacing:3px}.statusline{font-size:12px;color:#d7e6de;margin-top:6px}
+</style>
+</head>
+<body><main class="app">
+<h1>✏️ বেঞ্চ কলম যুদ্ধ</h1><p class="sub">বন্ধুর সঙ্গে অনলাইনে খেলো</p>
+<section id="setup" class="panel">
+  <label for="name">তোমার নাম</label><input id="name" maxlength="18" placeholder="যেমন: Noman" value="">
+  <label for="url">Supabase Project URL</label><input id="url" placeholder="https://your-project.supabase.co" inputmode="url">
+  <label for="key">Supabase Publishable key</label><input id="key" placeholder="sb_publishable_..." autocomplete="off">
+  <p class="small">প্রথমবার Supabase-এর Project URL ও publishable key বসাতে হবে। এগুলো এই ডিভাইসেই সেভ হবে। কখনো secret/service_role key এখানে দেবে না।</p>
+  <div class="row"><button id="create">রুম তৈরি করো</button><button id="showJoin" class="muted">রুমে যোগ দাও</button></div>
+  <div id="joinBox" class="hidden" style="margin-top:10px"><label for="roomInput">বন্ধুর রুম কোড</label><input id="roomInput" maxlength="6" placeholder="৬ অক্ষরের কোড" autocapitalize="characters"><button id="join" style="width:100%">Join Room</button></div>
+  <div id="setupMsg" class="statusline"></div>
+</section>
+<section id="gameArea" class="hidden">
+ <div class="hud"><div class="pill" id="p1label">তুমি<b>0</b></div><div class="pill">রুম<b id="roomLabel">------</b></div><div class="pill" id="p2label">বন্ধু<b>0</b></div></div>
+ <div class="panel"><div class="row" style="align-items:center"><div><div class="small">বন্ধুকে এই কোডটি পাঠাও</div><div class="roomcode" id="roomCode">------</div></div><button id="copyCode">কোড কপি</button></div><div class="statusline" id="connection">সংযোগ হচ্ছে…</div></div>
+ <div class="board-wrap"><canvas id="game" width="520" height="720"></canvas></div>
+ <div class="status" id="status">বন্ধুর জন্য অপেক্ষা করছি…</div>
+ <div class="controls"><button id="newRound">নতুন রাউন্ড</button><button id="leave" class="muted">রুম ছাড়ো</button></div>
+ <p class="small">কলমে চাপ দিয়ে পেছনের দিকে টেনে ছেড়ে দাও। তীর চিহ্ন শটের দিক দেখায়। টোকা ও পয়েন্টে সাউন্ড হবে।</p>
+</section>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const $=id=>document.getElementById(id);
+let supabase=null,channel=null,room='',role='',playerName='',opponentName='বন্ধু',connected=false,host=false;
+let game={pens:[],scores:[0,0],turn:0,moving:false,over:false};
+let drag=null,aim=null,animFrame=null,lastCollisionSound=0,audioCtx=null,lastStateSent=0;
+const canvas=$('game'),ctx=canvas.getContext('2d'),W=520,H=720,edge=34;
+function say(t){$('status').textContent=t}
+function setupMsg(t){$('setupMsg').textContent=t}
+function tone(freq=420,duration=.09,type='sine',volume=.07,slide=0){try{audioCtx=audioCtx||new(window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume();const o=audioCtx.createOscillator(),g=audioCtx.createGain(),n=audioCtx.currentTime;o.type=type;o.frequency.setValueAtTime(freq,n);if(slide)o.frequency.exponentialRampToValueAtTime(Math.max(50,freq+slide),n+duration);g.gain.setValueAtTime(volume,n);g.gain.exponentialRampToValueAtTime(.001,n+duration);o.connect(g);g.connect(audioCtx.destination);o.start(n);o.stop(n+duration)}catch(e){}}
+function tapSound(){tone(300,.08,'triangle',.07,-70)}function fallSound(){tone(520,.12,'sine',.08,-160);setTimeout(()=>tone(330,.16,'triangle',.09,-180),100)}function pointSound(){tone(660,.12,'sine',.09,160);setTimeout(()=>tone(880,.18,'sine',.09,180),110)}
+function newPen(x,y,angle,side){return{x,y,vx:0,vy:0,angle,side,alive:true}}
+function initialState(){return{pens:[newPen(190,510,-.12,0),newPen(330,200,.15,1)],scores:[0,0],turn:0,moving:false,over:false}}
+function currentPlayer(){return role==='host'?0:1}
+function isMyTurn(){return game.turn===currentPlayer()&&!game.moving&&!game.over&&connected}
+function saveConfig(){localStorage.setItem('pen_url',$('url').value.trim());localStorage.setItem('pen_key',$('key').value.trim());localStorage.setItem('pen_name',$('name').value.trim())}
+$('url').value=localStorage.getItem('pen_url')||'';$('key').value=localStorage.getItem('pen_key')||'';$('name').value=localStorage.getItem('pen_name')||'';
+function validConfig(){const u=$('url').value.trim(),k=$('key').value.trim();if(!/^https:\/\/.+\.supabase\.co\/?$/.test(u)||!k){setupMsg('সঠিক Supabase URL ও publishable key দাও।');return false}return true}
+function makeCode(){return Math.random().toString(36).slice(2,8).toUpperCase().padEnd(6,'X')}
+async function startRoom(asHost,code=''){
+ if(!validConfig())return;saveConfig();playerName=$('name').value.trim()|| (asHost?'Player 1':'Player 2');host=asHost;role=asHost?'host':'guest';room=code||makeCode();setupMsg('সংযোগ হচ্ছে…');
+ try{
+  supabase=window.supabase.createClient($('url').value.trim().replace(/\/$/,''),$('key').value.trim());
+  channel=supabase.channel('pen-duel-'+room,{config:{broadcast:{self:false},presence:{key:playerName+'-'+Math.random().toString(36).slice(2,7)}}});
+  channel.on('broadcast',{event:'game'},({payload})=>{if(!host&&payload.state){
+    const prev=game, next=payload.state;
+    if(prev&&prev.pens&&next.pens){
+      const pa=prev.pens,na=next.pens;
+      if(pa.length===2&&na.length===2&&pa[0].alive&&pa[1].alive&&na[0].alive&&na[1].alive){
+        const d0=Math.hypot(pa[0].x-pa[1].x,pa[0].y-pa[1].y),d1=Math.hypot(na[0].x-na[1].x,na[0].y-na[1].y);
+        if(d0>49&&d1<=49&&performance.now()-lastCollisionSound>180){tapSound();lastCollisionSound=performance.now()}
+      }
+      if(next.scores.some((v,i)=>v>(prev.scores[i]||0)))pointSound();
+      if(pa.some((p,i)=>p.alive&&!na[i].alive))fallSound();
+    }
+    game=next;renderHud();draw()
+  }});
+  channel.on('broadcast',{event:'shot'},({payload})=>{if(host&&payload.player===game.turn&&!game.moving&&!game.over){applyShot(payload.vx,payload.vy)}});
+  channel.on('broadcast',{event:'ready'},({payload})=>{if(host){opponentName=payload.name||'বন্ধু';broadcastState();$('connection').textContent=opponentName+' যুক্ত হয়েছে';say('বন্ধু যুক্ত হয়েছে! তোমার পালা হলে শট নাও।')}});
+  channel.on('broadcast',{event:'round'},()=>{if(host){game=initialState();broadcastState();say('নতুন রাউন্ড শুরু!')}})
+  channel.on('presence',{event:'sync'},()=>{const st=channel.presenceState();const count=Object.keys(st).length;if(count>=2){connected=true;$('connection').textContent='দুজন খেলোয়াড় অনলাইনে';if(host){say('বন্ধু যুক্ত হয়েছে! তোমার পালা হলে শট নাও');broadcastState()}}else if(!host){$('connection').textContent='রুমে ঢুকেছো, হোস্টের অপেক্ষা…'}});
+  channel.subscribe(async status=>{
+   if(status==='SUBSCRIBED'){
+    await channel.track({name:playerName,role});
+    $('setup').classList.add('hidden');$('gameArea').classList.remove('hidden');$('roomCode').textContent=room;$('roomLabel').textContent=room;
+    $('connection').textContent=asHost?'রুম তৈরি হয়েছে — বন্ধুর অপেক্ষা…':'রুমে যোগ দিয়েছো — সংযোগ হচ্ছে…';
+    if(host){game=initialState();broadcastState()}else{channel.send({type:'broadcast',event:'ready',payload:{name:playerName}})}
+    setupMsg('');
+   }
+  });
+ }catch(e){setupMsg('সংযোগ করা যায়নি: '+e.message)}
+}
+function broadcastState(){if(!host||!channel)return;channel.send({type:'broadcast',event:'game',payload:{state:game,hostName:playerName,guestName:opponentName}});renderHud();draw()}
+function renderHud(){const my=currentPlayer(),other=1-my;$('p1label').innerHTML='তুমি'+'<b>'+game.scores[my]+'</b>';$('p2label').innerHTML=(role==='host'?'বন্ধু':'হোস্ট')+'<b>'+game.scores[other]+'</b>';if(game.over)say('রাউন্ড শেষ! নতুন রাউন্ড শুরু করতে বোতাম চাপো।');else if(game.moving)say('কলম চলছে…');else say(game.turn===my?'তোমার পালা — টেনে ছেড়ে শট নাও।':'অন্য খেলোয়াড়ের পালা…')}
+function draw(){
+ ctx.clearRect(0,0,W,H);let g=ctx.createLinearGradient(0,0,W,H);g.addColorStop(0,'#e6c18a');g.addColorStop(.5,'#d5a76b');g.addColorStop(1,'#bd8953');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+ for(let i=0;i<19;i++){ctx.strokeStyle=i%2?'#a97543':'#f0d1a0';ctx.globalAlpha=.34;ctx.lineWidth=1.4;ctx.beginPath();ctx.moveTo(0,i*41+8);ctx.bezierCurveTo(140,i*41-3,310,i*41+22,W,i*41+4);ctx.stroke()}ctx.globalAlpha=1;
+ ctx.fillStyle='#8b5c35';ctx.fillRect(0,0,W,edge);ctx.fillRect(0,H-edge,W,edge);ctx.fillRect(0,0,edge,H);ctx.fillRect(W-edge,0,edge,H);
+ ctx.strokeStyle='#f5dfb9';ctx.lineWidth=3;ctx.setLineDash([8,8]);ctx.strokeRect(edge+7,edge+7,W-2*(edge+7),H-2*(edge+7));ctx.setLineDash([]);
+ ctx.fillStyle='#80552f';ctx.font='bold 13px system-ui';ctx.textAlign='center';ctx.fillText('SCHOOL BENCH',W/2,20);
+ if(drag&&aim){const dx=drag.x-aim.x,dy=drag.y-aim.y,mag=Math.hypot(dx,dy),len=Math.min(150,mag*1.5),ux=dx/(mag||1),uy=dy/(mag||1),ex=drag.x+ux*len,ey=drag.y+uy*len;ctx.strokeStyle='#fff8dd';ctx.lineWidth=4;ctx.setLineDash([7,6]);ctx.beginPath();ctx.moveTo(drag.x,drag.y);ctx.lineTo(ex,ey);ctx.stroke();ctx.setLineDash([]);const ang=Math.atan2(uy,ux),h=14;ctx.fillStyle='#fff8dd';ctx.beginPath();ctx.moveTo(ex,ey);ctx.lineTo(ex-h*Math.cos(ang-.55),ey-h*Math.sin(ang-.55));ctx.lineTo(ex-h*Math.cos(ang+.55),ey-h*Math.sin(ang+.55));ctx.closePath();ctx.fill()}
+ for(const p of game.pens||[])if(p.alive){ctx.save();ctx.translate(p.x,p.y);ctx.rotate(p.angle);ctx.fillStyle='#00000030';ctx.beginPath();ctx.roundRect(-48,-9,98,19,8);ctx.fill();const blue=p.side===0;let b=ctx.createLinearGradient(0,-8,0,8);b.addColorStop(0,blue?'#6ca4ff':'#ff8881');b.addColorStop(.5,blue?'#2865c5':'#c83d38');b.addColorStop(1,blue?'#17458e':'#8f2221');ctx.fillStyle=b;ctx.beginPath();ctx.roundRect(-45,-7,83,14,5);ctx.fill();ctx.fillStyle='#e4d8bc';ctx.beginPath();ctx.moveTo(38,-5);ctx.lineTo(49,0);ctx.lineTo(38,5);ctx.closePath();ctx.fill();ctx.fillStyle='#d7dce0';ctx.fillRect(-45,-8,10,16);ctx.fillStyle='#f5d78e';ctx.fillRect(-32,-6,3,12);ctx.restore()}
+}
+function pos(e){const r=canvas.getBoundingClientRect();return{x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height}}
+canvas.addEventListener('pointerdown',e=>{if(!isMyTurn())return;const q=pos(e),p=game.pens[currentPlayer()];if(p&&p.alive&&Math.hypot(q.x-p.x,q.y-p.y)<65){drag={x:p.x,y:p.y};aim=q;canvas.setPointerCapture(e.pointerId);draw()}});
+canvas.addEventListener('pointermove',e=>{if(drag){aim=pos(e);draw()}});
+canvas.addEventListener('pointerup',e=>{if(!drag)return;const q=pos(e),dx=drag.x-q.x,dy=drag.y-q.y,mag=Math.hypot(dx,dy);drag=null;aim=null;if(mag>8){const power=Math.min(20,mag*.17),vx=dx/(mag||1)*power,vy=dy/(mag||1)*power;if(host)applyShot(vx,vy);else channel.send({type:'broadcast',event:'shot',payload:{player:game.turn,vx,vy}});tone(390,.07,'triangle',.06,100)}draw()});
+function applyShot(vx,vy){const p=game.pens[game.turn];if(!p||!p.alive||game.moving||game.over)return;p.vx=vx;p.vy=vy;game.moving=true;broadcastState();requestAnimationFrame(tick)}
+function tick(){if(!host)return;let moving=false;for(const p of game.pens){if(!p.alive)continue;p.x+=p.vx;p.y+=p.vy;p.angle+=p.vx*.006-p.vy*.004;p.vx*=.986;p.vy*=.986;if(Math.hypot(p.vx,p.vy)>.12)moving=true;else{p.vx=0;p.vy=0}
+ if(p.x< -12||p.x>W+12||p.y< -12||p.y>H+12)p.alive=false;
+ if(p.x<edge+10&&p.vx<0)p.vx*=.92;if(p.x>W-edge-10&&p.vx>0)p.vx*=.92;if(p.y<edge+10&&p.vy<0)p.vy*=.92;if(p.y>H-edge-10&&p.vy>0)p.vy*=.92;}
+ const a=game.pens[0],b=game.pens[1];if(a.alive&&b.alive){let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy);if(d<48){const nx=dx/(d||1),ny=dy/(d||1),push=(48-d)/2;a.x-=nx*push;a.y-=ny*push;b.x+=nx*push;b.y+=ny*push;const rel=(a.vx-b.vx)*nx+(a.vy-b.vy)*ny;if(rel>0){a.vx-=rel*nx*.9;a.vy-=rel*ny*.9;b.vx+=rel*nx*.9;b.vy+=rel*ny*.9;const now=performance.now();if(now-lastCollisionSound>180){tapSound();lastCollisionSound=now}}}}
+ if(!a.alive||!b.alive){if(!b.alive&&a.alive)game.scores[0]++;else if(!a.alive&&b.alive)game.scores[1]++;if(!a.alive||!b.alive)fallSound();if(a.alive!==b.alive)pointSound();game.moving=false;game.over=true;broadcastState();return}
+ if(moving){if(performance.now()-lastStateSent>50){broadcastState();lastStateSent=performance.now()}requestAnimationFrame(tick)}else{game.moving=false;game.turn=1-game.turn;broadcastState()}
+}
+$('create').onclick=()=>startRoom(true);
+$('showJoin').onclick=()=>{$('joinBox').classList.toggle('hidden')};
+$('join').onclick=()=>{const c=$('roomInput').value.trim().toUpperCase();if(c.length!==6){setupMsg('৬ অক্ষরের রুম কোড দাও।');return}startRoom(false,c)};
+$('copyCode').onclick=async()=>{try{await navigator.clipboard.writeText(room);$('copyCode').textContent='কপি হয়েছে!'}catch(e){$('copyCode').textContent=room}};
+$('newRound').onclick=()=>{if(!host){channel.send({type:'broadcast',event:'round',payload:{}});return}game=initialState();broadcastState();say('নতুন রাউন্ড!')};
+$('leave').onclick=async()=>{if(channel)await supabase.removeChannel(channel);channel=null;room='';role='';host=false;connected=false;$('gameArea').classList.add('hidden');$('setup').classList.remove('hidden');setupMsg('রুম ছেড়েছো।')};
+draw();
+</script></body></html>
